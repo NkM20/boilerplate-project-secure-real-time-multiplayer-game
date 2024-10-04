@@ -1,56 +1,79 @@
-require('dotenv').config();
-const express = require('express');
-const bodyParser = require('body-parser');
-const expect = require('chai');
-const socket = require('socket.io');
-const cors = require('cors');
-
-const fccTestingRoutes = require('./routes/fcctesting.js');
-const runner = require('./test-runner.js');
+require("dotenv").config();
+const express = require("express");
+const helmet = require("helmet");
+const bodyParser = require("body-parser");
+const cors = require("cors");
+const socket = require("socket.io");
+const fccTestingRoutes = require("./routes/fcctesting.js");
+const runner = require("./test-runner.js");
 
 const app = express();
+const portNum = process.env.PORT || 3000;
+let allPlayers = [];
+let goal = {};
 
-app.use('/public', express.static(process.cwd() + '/public'));
-app.use('/assets', express.static(process.cwd() + '/assets'));
+app.use(helmet({
+  noSniff: true,
+  xssFilter: true,
+  hidePoweredBy: { setTo: "PHP 7.4.3" },
+  noCache: true
+}));
 
+app.use("/public", express.static(process.cwd() + "/public"));
+app.use("/assets", express.static(process.cwd() + "/assets"));
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
+app.use(cors({ origin: "*" }));
 
-//For FCC testing purposes and enables user to connect from outside the hosting platform
-app.use(cors({origin: '*'})); 
-
-// Index page (static HTML)
-app.route('/')
-  .get(function (req, res) {
-    res.sendFile(process.cwd() + '/views/index.html');
-  }); 
-
-//For FCC testing purposes
-fccTestingRoutes(app);
-    
-// 404 Not Found Middleware
-app.use(function(req, res, next) {
-  res.status(404)
-    .type('text')
-    .send('Not Found');
+app.route("/").get((req, res) => {
+  res.sendFile(process.cwd() + "/views/index.html");
 });
 
-const portNum = process.env.PORT || 3000;
+// For FCC testing purposes
+fccTestingRoutes(app);
 
-// Set up server and tests
+// 404 Not Found Middleware
+app.use((req, res) => {
+  res.status(404).type("text").send("Not Found");
+});
+
 const server = app.listen(portNum, () => {
   console.log(`Listening on port ${portNum}`);
-  if (process.env.NODE_ENV==='test') {
-    console.log('Running Tests...');
-    setTimeout(function () {
-      try {
-        runner.run();
-      } catch (error) {
-        console.log('Tests are not valid:');
-        console.error(error);
-      }
-    }, 1500);
+  if (process.env.NODE_ENV === "test") {
+    console.log("Running Tests...");
+    setTimeout(runner.run, 1500);
   }
 });
 
-module.exports = app; // For testing
+const io = socket(server);
+
+io.on("connection", (socket) => {
+  socket.on("init", (data) => {
+    try {
+      data.localPlayer.socketId = socket.id;
+      if (!allPlayers.some(player => player.socketId === data.localPlayer.socketId)) {
+        allPlayers.push(data.localPlayer);
+      }
+      io.emit("updateClientPlayers", { allPlayers, goal });
+    } catch (error) {
+      console.error('Error during init:', error);
+    }
+  });
+
+  socket.on("updateServerPlayers", (data) => {
+    goal = data.goal;
+    const playerIndex = allPlayers.findIndex(player => player.id === data.localPlayer.id);
+    if (playerIndex >= 0) {
+      allPlayers[playerIndex] = { ...allPlayers[playerIndex], ...data.localPlayer };
+      io.emit("updateClientPlayers", { allPlayers, goal });
+    }
+  });
+
+  socket.on("disconnect", () => {
+    allPlayers = allPlayers.filter(player => player.socketId !== socket.id);
+    io.emit("updateClientPlayers", { allPlayers, goal });
+    console.log(`${socket.id} disconnected`);
+  });
+});
+
+module.exports = app;
